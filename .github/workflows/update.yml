@@ -1,0 +1,52 @@
+name: Update High-Quality m3u8 JSON Every 2 Hours
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install yt-dlp
+          sudo apt-get update
+          sudo apt-get install -y curl
+
+      - name: Run update script
+        run: |
+          python update.py 2>&1 | tee update.log
+          
+      - name: Show summary
+        run: |
+          echo "=== UPDATE SUMMARY ==="
+          if [ -f update.log ]; then
+            tail -10 update.log
+          fi
+          echo "File size: $(wc -l < artist.json) lines"
+
+      - name: Commit changes
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add artist.json
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "🔄 Update high-quality m3u8 links [$(date +%Y-%m-%d %H:%M)]"
+            git push
+            echo "✅ Changes pushed successfully"
+          fi
