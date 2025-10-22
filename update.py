@@ -13,87 +13,80 @@ def get_current_time_iso():
 
 def get_highest_quality_m3u8(yt_url):
     """
-    Extract the highest quality m3u8 stream available
-    Prioritizes: 720p/1080p AAC > 480p AAC > 360p AAC > Best Audio
+    FIXED: Handles channel/live URLs + extracts highest quality m3u8
     """
     try:
-        # First, get all available formats
+        print(f"    🔍 Trying URL: {yt_url}")
+        
+        # STEP 1: Get the ACTUAL LIVE STREAM URL first
+        print("    📡 Fetching live stream URL...")
         output = subprocess.check_output([
             "yt-dlp", 
-            "-f", "bestvideo[height<=1080][ext=m3u8]/bestvideo[height<=720][ext=m3u8]/best[height<=480][ext=m3u8]/best[ext=m3u8]",
-            "--get-url", 
-            yt_url
-        ], stderr=subprocess.STDOUT)
-        
-        url = output.decode().strip()
-        if url and url.endswith(".m3u8"):
-            bitrate = get_bitrate_from_m3u8(url)
-            return url, bitrate
-        
-        # Fallback 1: Try best audio m3u8
-        output = subprocess.check_output([
-            "yt-dlp", 
-            "-f", "bestaudio[ext=m3u8]",
-            "--get-url", 
-            yt_url
-        ], stderr=subprocess.STDOUT)
-        
-        url = output.decode().strip()
-        if url and url.endswith(".m3u8"):
-            bitrate = get_bitrate_from_m3u8(url)
-            return url, bitrate
-        
-        # Fallback 2: Try any m3u8
-        output = subprocess.check_output([
-            "yt-dlp", 
+            "--get-url",
             "-f", "best[ext=m3u8]",
-            "--get-url", 
+            "--no-warnings",
             yt_url
-        ], stderr=subprocess.STDOUT)
+        ], stderr=subprocess.STDOUT, timeout=30)
         
-        url = output.decode().strip()
-        if url and url.endswith(".m3u8"):
-            bitrate = get_bitrate_from_m3u8(url)
-            return url, bitrate
-            
+        stream_url = output.decode().strip()
+        print(f"    📡 Found stream: {stream_url[:80]}...")
+        
+        if not stream_url.endswith('.m3u8'):
+            print("    ❌ Not an m3u8 stream")
+            return None, 0
+        
+        # STEP 2: Get highest quality variant
+        print("    🎥 Checking quality variants...")
+        variants_output = subprocess.check_output([
+            "yt-dlp", 
+            "-F",  # List formats
+            stream_url
+        ], stderr=subprocess.STDOUT, timeout=15)
+        
+        # STEP 3: Select best m3u8 format
+        format_cmd = [
+            "yt-dlp",
+            "-f", "bestvideo[height<=1080][ext=m3u8_native]/bestvideo[height<=720][ext=m3u8_native]/best[ext=m3u8_native]/bestaudio[ext=m3u8_native]",
+            "--get-url",
+            stream_url
+        ]
+        
+        output = subprocess.check_output(format_cmd, stderr=subprocess.STDOUT, timeout=20)
+        best_url = output.decode().strip()
+        
+        if best_url and best_url.endswith('.m3u8'):
+            bitrate = get_bitrate_from_m3u8(best_url)
+            print(f"    ✅ HIGH QUALITY: {bitrate}kbps")
+            return best_url, bitrate
+        
+        # FALLBACK: Use original stream
+        bitrate = get_bitrate_from_m3u8(stream_url)
+        print(f"    ✅ QUALITY: {bitrate}kbps")
+        return stream_url, bitrate
+        
     except subprocess.CalledProcessError as e:
-        print(f"Error getting m3u8 for {yt_url}: {e}")
+        print(f"    ❌ yt-dlp error: {e}")
+    except subprocess.TimeoutExpired:
+        print(f"    ⏰ Timeout - stream may be offline")
     
     return None, 0
 
 def get_bitrate_from_m3u8(m3u8_url):
-    """
-    Extract bitrate from m3u8 manifest
-    """
+    """Extract bitrate from m3u8"""
     try:
         output = subprocess.check_output([
-            "curl", "-s", "--max-time", "10", m3u8_url
+            "curl", "-s", "--max-time", "8", m3u8_url
         ], stderr=subprocess.STDOUT)
         
         content = output.decode()
-        # Look for #EXT-X-STREAM-INF:BANDWIDTH=
-        bandwidth_match = re.search(r'#EXT-X-STREAM-INF:.*?BANDWIDTH=(\d+)', content)
+        bandwidth_match = re.search(r'BANDWIDTH=(\d+)', content)
         if bandwidth_match:
-            bitrate = int(bandwidth_match.group(1)) // 1000  # Convert to kbps
-            return bitrate
+            return int(bandwidth_match.group(1)) // 1000
         
-        # Look for #EXTINF bitrate
-        extinf_match = re.search(r'#EXT-X-MEDIA-SEQUENCE.*?BANDWIDTH=(\d+)', content)
-        if extinf_match:
-            bitrate = int(extinf_match.group(1)) // 1000
-            return bitrate
-            
     except:
         pass
     
-    return 128  # Default bitrate
-
-def get_current_time():
-    now = datetime.datetime.now(datetime.timezone.utc)
-    return now.strftime("%Y-%m-%d %H:%M:%S")
-
-def get_current_time_iso():
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+    return 128  # Default
 
 # Parse yt_links.txt
 entries = []
@@ -107,154 +100,120 @@ while i < len(content):
         i += 1
         continue
     
-    # Handle both formats: "Name | Lang | Icon | URL" or split lines
     parts = [p.strip() for p in line.split("|")]
     
     if len(parts) == 4:
         entries.append(parts)
-    elif len(parts) == 3 and (line.endswith("|") or i+1 < len(content)):
-        # Multi-line entry
+    elif len(parts) == 3 and i+1 < len(content):
         favicon = parts[2]
         i += 1
-        if i < len(content):
-            yt_url = content[i].strip()
-            entries.append([parts[0], parts[1], favicon, yt_url])
+        yt_url = content[i].strip()
+        entries.append([parts[0], parts[1], favicon, yt_url])
     i += 1
 
-print(f"Parsed {len(entries)} valid entries from yt_links.txt")
+print(f"✅ Parsed {len(entries)} entries")
 
-# Generate new data
+# Process streams
 json_data = []
-successful_streams = 0
+successful = 0
 
 for entry in entries:
-    if len(entry) != 4:
-        continue
+    if len(entry) != 4: continue
         
     name, lang, favicon, yt_url = entry
+    print(f"\n📺 Processing: {name}")
     
-    print(f"Processing: {name}")
     m3u8, bitrate = get_highest_quality_m3u8(yt_url)
     
-    if not m3u8:
-        print(f"  ❌ No m3u8 found for {name}")
-        continue
-    
-    successful_streams += 1
-    print(f"  ✅ Found m3u8: {bitrate}kbps")
-    
-    # Determine countrycode
-    name_lower = name.lower()
-    if any(word in name_lower for word in ["news", "tv", "channel"]):
-        countrycode = "NEWS"
-        tags = "News,Live"
-    elif any(word in lang or name_lower for word in ["music", "hits"]):
-        countrycode = "ARTIST"
-        tags = "Music"
+    if m3u8:
+        successful += 1
+        print(f"   🎉 SUCCESS: {bitrate}kbps")
+        
+        # Determine type
+        name_lower = name.lower()
+        if "news" in name_lower:
+            countrycode, tags = "NEWS", "News,Live"
+        elif "hits" in name_lower or "music" in lang.lower():
+            countrycode, tags = "ARTIST", "Music"
+        else:
+            countrycode, tags = "LIVE", "Live,TV"
+        
+        # Create entry
+        now_str = get_current_time()
+        now_iso = get_current_time_iso()
+        
+        dict_entry = {
+            "changeuuid": str(uuid.uuid4()),
+            "stationuuid": str(uuid.uuid4()),
+            "serveruuid": str(uuid.uuid4()),
+            "name": name,
+            "url": m3u8,
+            "url_resolved": m3u8,
+            "homepage": "",
+            "favicon": favicon,
+            "tags": tags,
+            "country": "India",
+            "countrycode": countrycode,
+            "iso_3166_2": "",
+            "state": "Tamil Nadu",
+            "language": "tamil",
+            "languagecodes": "ta",
+            "votes": 0,
+            "lastchangetime": now_str,
+            "lastchangetime_iso8601": now_iso,
+            "codec": "AAC",
+            "bitrate": bitrate,
+            "hls": 1,
+            "lastcheckok": 1,
+            "lastchecktime": now_str,
+            "lastchecktime_iso8601": now_iso,
+            "lastcheckoktime": now_str,
+            "lastcheckoktime_iso8601": now_iso,
+            "lastlocalchecktime": now_str,
+            "lastlocalchecktime_iso8601": now_iso,
+            "clicktimestamp": now_str,
+            "clicktimestamp_iso8601": now_iso,
+            "clickcount": 0,
+            "clicktrend": 0,
+            "ssl_error": 0,
+            "geo_lat": None,
+            "geo_long": None,
+            "geo_distance": None,
+            "has_extended_info": False
+        }
+        json_data.append(dict_entry)
     else:
-        countrycode = "LIVE"
-        tags = "Live,TV"
-    
-    # Generate UUIDs
-    changeuuid = str(uuid.uuid4())
-    stationuuid = str(uuid.uuid4())
-    serveruuid = str(uuid.uuid4())
-    
-    now_str = get_current_time()
-    now_iso = get_current_time_iso()
-    
-    dict_entry = {
-        "changeuuid": changeuuid,
-        "stationuuid": stationuuid,
-        "serveruuid": serveruuid,
-        "name": name,
-        "url": m3u8,
-        "url_resolved": m3u8,
-        "homepage": "",
-        "favicon": favicon,
-        "tags": tags,
-        "country": "India",
-        "countrycode": countrycode,
-        "iso_3166_2": "",
-        "state": "Tamil Nadu",
-        "language": lang.lower(),
-        "languagecodes": "ta",
-        "votes": 0,
-        "lastchangetime": now_str,
-        "lastchangetime_iso8601": now_iso,
-        "codec": "AAC",
-        "bitrate": bitrate,
-        "hls": 1,
-        "lastcheckok": 1,
-        "lastchecktime": now_str,
-        "lastchecktime_iso8601": now_iso,
-        "lastcheckoktime": now_str,
-        "lastcheckoktime_iso8601": now_iso,
-        "lastlocalchecktime": now_str,
-        "lastlocalchecktime_iso8601": now_iso,
-        "clicktimestamp": now_str,
-        "clicktimestamp_iso8601": now_iso,
-        "clickcount": 0,
-        "clicktrend": 0,
-        "ssl_error": 0,
-        "geo_lat": None,
-        "geo_long": None,
-        "geo_distance": None,
-        "has_extended_info": False
-    }
-    json_data.append(dict_entry)
+        print(f"   ❌ FAILED")
 
-print(f"\nSuccessfully processed {successful_streams}/{len(entries)} streams")
+print(f"\n🎉 SUCCESS: {successful}/{len(entries)} streams")
 
-# Load existing artist.json if exists
+# Update existing json
 try:
     with open("artist.json", "r") as f:
         existing = json.load(f)
-    print(f"Loaded {len(existing)} existing entries")
-except FileNotFoundError:
+except:
     existing = []
-    print("No existing artist.json found")
 
-# Update or add entries (preserve existing UUIDs when possible)
 name_to_existing = {d["name"]: d for d in existing}
+updated = 0
 
-updated_count = 0
-added_count = 0
-
-for new_dict in json_data:
-    name = new_dict["name"]
-    
-    if name in name_to_existing:
-        # Update existing entry
-        old = name_to_existing[name]
-        old["url"] = new_dict["url"]
-        old["url_resolved"] = new_dict["url"]
-        old["bitrate"] = new_dict["bitrate"]
-        old["tags"] = new_dict["tags"]
-        old["lastchangetime"] = new_dict["lastchangetime"]
-        old["lastchangetime_iso8601"] = new_dict["lastchangetime_iso8601"]
-        old["lastchecktime"] = new_dict["lastchecktime"]
-        old["lastchecktime_iso8601"] = new_dict["lastchecktime_iso8601"]
-        old["lastcheckoktime"] = new_dict["lastcheckoktime"]
-        old["lastcheckoktime_iso8601"] = new_dict["lastcheckoktime_iso8601"]
-        old["lastlocalchecktime"] = new_dict["lastlocalchecktime"]
-        old["lastlocalchecktime_iso8601"] = new_dict["lastlocalchecktime_iso8601"]
-        old["clicktimestamp"] = new_dict["clicktimestamp"]
-        old["clicktimestamp_iso8601"] = new_dict["clicktimestamp_iso8601"]
-        old["changeuuid"] = str(uuid.uuid4())
-        updated_count += 1
+for new_entry in json_data:
+    if new_entry["name"] in name_to_existing:
+        old = name_to_existing[new_entry["name"]]
+        old.update({
+            k: v for k, v in new_entry.items() 
+            if k in ["url", "url_resolved", "bitrate", "tags", "lastchangetime", 
+                    "lastchangetime_iso8601", "lastchecktime", "lastchecktime_iso8601",
+                    "lastcheckoktime", "lastcheckoktime_iso8601", "clicktimestamp", 
+                    "clicktimestamp_iso8601", "changeuuid"]
+        })
+        updated += 1
     else:
-        # Add new entry
-        existing.append(new_dict)
-        added_count += 1
+        existing.append(new_entry)
 
-# Remove entries that no longer have valid streams
-existing = [e for e in existing if any(e["name"] == d["name"] for d in json_data)]
-
-print(f"Updated: {updated_count}, Added: {added_count}, Total: {len(existing)}")
-
-# Write back to artist.json
+# Write output
 with open("artist.json", "w") as f:
     json.dump(existing, f, indent=2)
 
-print("✅ artist.json updated successfully!")
+print(f"✅ Updated {updated} entries | Total: {len(existing)}")
+print("🎵 artist.json ready!")
