@@ -205,4 +205,38 @@ for name, lang, favicon, url in entries:
             "lastcheckoktime": get_current_time(),
             "lastcheckoktime_iso8601": get_current_time_iso(),
             "lastlocalchecktime": get_current_time(),
-            "lastlocalchecktime_iso8601":
+            "lastlocalchecktime_iso8601": get_current_time_iso(),
+            "clicktimestamp": get_current_time(),
+            "clicktimestamp_iso8601": get_current_time_iso(),
+            "clickcount": 0,
+            "clicktrend": 0,
+            "ssl_error": 0,
+            "geo_lat": None,
+            "geo_long": None,
+            "geo_distance": None,
+            "has_extended_info": False
+        }
+        json_data.append(entry)
+
+# UPDATE EXISTING JSON
+try:
+    with open("artist.json", "r") as f:
+        existing = json.load(f)
+except:
+    existing = []
+
+# Merge new with existing
+existing_dict = {e["name"]: e for e in existing}
+for new_entry in json_data:
+    existing_dict[new_entry["name"]] = new_entry
+
+existing = list(existing_dict.values())
+
+# SAVE
+with open("artist.json", "w") as f:
+    json.dump(existing, f, indent=2)
+
+print("\n" + "=" * 50)
+print(f"🎉 SUCCESS: {success_count}/{len(entries)} streams")
+print(f"📁 Total entries: {len(existing)}")
+print("✅ artist.json UPDATED!")
